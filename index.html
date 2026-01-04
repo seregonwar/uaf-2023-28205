@@ -8,10 +8,104 @@
 <body>
     <h1>UAF: CVE-2023-28205</h1>
     <p>Click the button to see the bug in action. (Browser crashes or [+] idx: 0x0)</p>
-    <button id="button">Click me</button>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin: 12px 0;">
+        <button id="runCrash">Run (crash)</button>
+        <button id="runProbe1">Run (probe=1)</button>
+        <button id="runProbe2">Run (probe=2)</button>
+        <button id="loadLogs">Load logs</button>
+        <button id="clearLogs">Clear logs</button>
+        <button id="exportLogs">Export logs</button>
+    </div>
+    <div style="margin: 8px 0;">
+        <div id="status" style="font-family: monospace;"></div>
+    </div>
+    <pre id="logview" style="white-space: pre-wrap; word-break: break-word; border: 1px solid #ccc; padding: 10px; min-height: 220px;"></pre>
     <script type="module">
         import { main } from './poc.js';
-        document.getElementById('button').addEventListener('click', main);
+
+        const LOG_KEY = 'uaf-2023-28205.logs';
+        const statusEl = document.getElementById('status');
+        const logView = document.getElementById('logview');
+
+        function setStatus(s) {
+            statusEl.textContent = s;
+        }
+
+        function formatLogs(entries) {
+            if (!Array.isArray(entries) || entries.length === 0)
+                return '(no logs)';
+            return entries.map(e => {
+                const t = e?.t ?? '';
+                const run = e?.run ?? '';
+                const mode = e?.mode ?? '';
+                const probe = e?.probe ?? '';
+                const msg = e?.msg ?? '';
+                return `${t} [run:${run} mode:${mode} probe:${probe}] ${msg}`;
+            }).join('\n');
+        }
+
+        function loadLogs() {
+            try {
+                const raw = localStorage.getItem(LOG_KEY);
+                if (!raw) {
+                    logView.textContent = '(no logs)';
+                    setStatus('loaded: 0');
+                    return;
+                }
+                const parsed = JSON.parse(raw);
+                logView.textContent = formatLogs(parsed);
+                setStatus('loaded: ' + (Array.isArray(parsed) ? parsed.length : 0));
+            } catch (e) {
+                logView.textContent = 'failed to load logs: ' + String(e);
+                setStatus('load failed');
+            }
+        }
+
+        function clearLogs() {
+            try {
+                localStorage.removeItem(LOG_KEY);
+                loadLogs();
+                setStatus('cleared');
+            } catch (e) {
+                setStatus('clear failed: ' + String(e));
+            }
+        }
+
+        async function exportLogs() {
+            try {
+                const raw = localStorage.getItem(LOG_KEY) ?? '[]';
+                await navigator.clipboard.writeText(raw);
+                setStatus('exported to clipboard (' + raw.length + ' chars)');
+            } catch (e) {
+                setStatus('export failed: ' + String(e));
+            }
+        }
+
+        function rerunWith(params) {
+            const url = new URL(location.href);
+            for (const [k, v] of Object.entries(params)) {
+                if (v === null)
+                    url.searchParams.delete(k);
+                else
+                    url.searchParams.set(k, String(v));
+            }
+            location.href = url.toString();
+        }
+
+        document.getElementById('runCrash').addEventListener('click', () => rerunWith({ mode: 'crash', probe: null }));
+        document.getElementById('runProbe1').addEventListener('click', () => rerunWith({ mode: 'probe', probe: 1 }));
+        document.getElementById('runProbe2').addEventListener('click', () => rerunWith({ mode: 'probe', probe: 2 }));
+
+        document.getElementById('loadLogs').addEventListener('click', loadLogs);
+        document.getElementById('clearLogs').addEventListener('click', clearLogs);
+        document.getElementById('exportLogs').addEventListener('click', exportLogs);
+
+        setStatus('mode=' + (new URLSearchParams(location.search).get('mode') ?? 'crash') + ' probe=' + (new URLSearchParams(location.search).get('probe') ?? ''));
+        loadLogs();
+
+        // Run automatically when explicitly requested by query string
+        if (new URLSearchParams(location.search).has('autorun'))
+            main();
     </script>
 </body>
 </html>
