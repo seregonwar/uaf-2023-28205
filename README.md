@@ -323,4 +323,5 @@ CVE-2023-28205 was discovered by **Clément Lecigne**
 
 Thanks to **abc** for the original proof-of-concept inspiration.
 
+Based on [ntfargo](https://github.com/ntfargo/) poc repository [uaf-2023-28205](https://github.com/ntfargo/uaf-2023-28205)
 
